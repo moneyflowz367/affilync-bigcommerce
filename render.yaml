@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: affilync-bigcommerce
+    runtime: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      pip install -r backend/requirements.txt
+      cd frontend && npm install && npm run build
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: BIGCOMMERCE_CLIENT_ID
+        sync: false
+      - key: BIGCOMMERCE_CLIENT_SECRET
+        sync: false
+      - key: AFFILYNC_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: affilync-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: affilync-redis
+          property: connectionString
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: APP_URL
+        value: https://bigcommerce.affilync.com
+      - key: AFFILYNC_API_URL
+        value: https://api.affilync.com
+    healthCheckPath: /health
+    autoDeploy: true
