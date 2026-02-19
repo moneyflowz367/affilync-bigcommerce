@@ -39,9 +39,21 @@ async def log_webhook(
     payload: dict,
     webhook_id: str = None,
 ) -> BigCommerceWebhookLog:
-    """Create a webhook log entry."""
+    """Create a webhook log entry with idempotency check (PAY-XI-11)."""
     # Create hash for deduplication
     payload_hash = sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
+
+    # PAY-XI-11: Check if this webhook was already processed (idempotency)
+    existing = await db.execute(
+        select(BigCommerceWebhookLog).where(
+            BigCommerceWebhookLog.hash == payload_hash,
+            BigCommerceWebhookLog.store_id == store_id,
+        )
+    )
+    duplicate = existing.scalar_one_or_none()
+    if duplicate and duplicate.status == "processed":
+        logger.info("PAY-XI-11: Duplicate webhook skipped (hash=%s, scope=%s)", payload_hash, scope)
+        return duplicate
 
     log = BigCommerceWebhookLog(
         store_id=store_id,
@@ -107,7 +119,7 @@ async def handle_bigcommerce_webhook(
     # Get webhook scope
     scope = payload.get("scope", "")
 
-    # Log webhook
+    # Log webhook (with idempotency check — PAY-XI-11)
     webhook_log = await log_webhook(
         db=db,
         store_id=store.id,
@@ -115,6 +127,10 @@ async def handle_bigcommerce_webhook(
         payload=payload,
         webhook_id=payload.get("hash"),
     )
+
+    # PAY-XI-11: If webhook was already processed, return immediately
+    if webhook_log.status == "processed":
+        return {"status": "duplicate", "result": "already_processed"}
 
     # Route to handler based on scope
     try:
