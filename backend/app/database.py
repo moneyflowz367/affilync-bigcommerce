@@ -23,6 +23,7 @@ engine = create_async_engine(
     pool_size=20,
     max_overflow=10,
     pool_pre_ping=True,
+    pool_recycle=280,  # Neon times out idle connections at 300s
 )
 
 # Create session factory

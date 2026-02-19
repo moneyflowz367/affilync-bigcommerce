@@ -63,8 +63,9 @@ app.add_middleware(
         settings.app_url,
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+    max_age=3600,
 )
 
 # Add rate limiting middleware (shared library: Redis-backed with in-memory fallback)

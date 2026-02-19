@@ -27,6 +27,10 @@ try:
             ),
         )
     else:
+        logger.critical(
+            "RATE LIMITER: No REDIS_URL configured — using in-memory fallback. "
+            "NOT safe for production multi-worker deployments."
+        )
         _limiter = RateLimiter(
             config=RateLimitConfig(
                 requests_per_minute=60,
@@ -39,7 +43,10 @@ try:
         return _limiter
 
 except ImportError:
-    logger.warning("affilync_integrations not installed, using basic rate limiting")
+    logger.critical(
+        "RATE LIMITER: affilync_integrations not installed — "
+        "rate limiting is DISABLED. Install the shared library."
+    )
     from starlette.middleware.base import BaseHTTPMiddleware
     from fastapi import Request
 
