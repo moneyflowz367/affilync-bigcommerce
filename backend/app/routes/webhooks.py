@@ -5,7 +5,7 @@ Process incoming webhooks from BigCommerce
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from hashlib import sha256
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
@@ -90,7 +90,7 @@ async def handle_bigcommerce_webhook(
         "producer": "stores/abc123"
     }
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now(UTC)
 
     # Parse payload
     try:

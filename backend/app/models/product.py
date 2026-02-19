@@ -2,7 +2,7 @@
 BigCommerceProduct Model - Synced product data
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
@@ -91,7 +91,7 @@ class BigCommerceProduct(Base):
     def mark_synced(self, affilync_product_id: str = None) -> None:
         """Mark product as successfully synced."""
         self.is_synced = True
-        self.last_synced_at = datetime.utcnow()
+        self.last_synced_at = datetime.now(UTC)
         self.sync_error = None
         if affilync_product_id:
             self.affilync_product_id = affilync_product_id
@@ -100,7 +100,7 @@ class BigCommerceProduct(Base):
         """Mark product sync as failed."""
         self.is_synced = False
         self.sync_error = error
-        self.last_synced_at = datetime.utcnow()
+        self.last_synced_at = datetime.now(UTC)
 
     @classmethod
     def from_bigcommerce_data(cls, store_id, bc_data: dict) -> "BigCommerceProduct":

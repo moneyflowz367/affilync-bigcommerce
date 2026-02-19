@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     database_url: str
 
     # Redis (for sessions and rate limiting)
-    redis_url: str = "redis://localhost:6379"
+    redis_url: Optional[str] = None
 
     # Security
     encryption_key: str

@@ -2,7 +2,7 @@
 BigCommerceWebhookLog Model - Webhook event logging
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
@@ -44,7 +44,7 @@ class BigCommerceWebhookLog(Base):
     processing_time_ms = Column(Integer)
 
     # Timestamps
-    received_at = Column(DateTime, default=datetime.utcnow)
+    received_at = Column(DateTime, default=lambda: datetime.now(UTC))
     processed_at = Column(DateTime)
 
     # Relationships
@@ -57,16 +57,16 @@ class BigCommerceWebhookLog(Base):
         """Mark webhook as successfully processed."""
         self.status = "success"
         self.result = result
-        self.processed_at = datetime.utcnow()
+        self.processed_at = datetime.now(UTC)
 
     def mark_failed(self, error: str) -> None:
         """Mark webhook as failed."""
         self.status = "failed"
         self.error = error
-        self.processed_at = datetime.utcnow()
+        self.processed_at = datetime.now(UTC)
 
     def set_processing_time(self, start_time: datetime) -> None:
         """Calculate and set processing time."""
         if start_time:
-            delta = datetime.utcnow() - start_time
+            delta = datetime.now(UTC) - start_time
             self.processing_time_ms = int(delta.total_seconds() * 1000)
