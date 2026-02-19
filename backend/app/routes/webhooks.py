@@ -250,9 +250,10 @@ async def handle_order_status_updated(
     # 11 = Awaiting Fulfillment
     # 12 = Manual Verification Required
 
-    # Track conversion for completed statuses
-    conversion_statuses = [2, 3, 10, 11]  # Shipped, Partially Shipped, Completed, Awaiting Fulfillment
-    refund_statuses = [4]  # Refunded
+    # Track conversion only for payment-confirmed statuses
+    # Status 11 (Awaiting Fulfillment) removed — payment not yet confirmed
+    conversion_statuses = [2, 3, 10]  # Shipped, Partially Shipped, Completed
+    refund_statuses = [4, 5, 6]  # Refunded, Cancelled, Declined
 
     if status_id in conversion_statuses:
         # Need to fetch full order data

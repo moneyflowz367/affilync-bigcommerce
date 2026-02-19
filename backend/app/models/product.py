@@ -5,7 +5,7 @@ BigCommerceProduct Model - Synced product data
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -39,9 +39,9 @@ class BigCommerceProduct(Base):
     handle = Column(String(255), index=True)  # URL slug
 
     # Pricing
-    price = Column(Float)
-    compare_at_price = Column(Float)  # sale_price in BC
-    cost_price = Column(Float)
+    price = Column(Numeric(12, 2))
+    compare_at_price = Column(Numeric(12, 2))  # sale_price in BC
+    cost_price = Column(Numeric(12, 2))
     currency = Column(String(3), default="USD")
 
     # Images

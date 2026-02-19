@@ -3,6 +3,7 @@ OAuth Routes for BigCommerce App Installation
 Handles the OAuth flow for app installation
 """
 
+import json
 import logging
 import secrets
 from datetime import datetime, timedelta
@@ -16,12 +17,65 @@ from app.config import settings
 from app.database import get_db
 from app.services.store_service import StoreService
 
-# CSRF state token storage (use Redis in production for multi-worker)
-_oauth_states: dict[str, dict] = {}
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Redis-backed CSRF state storage with in-memory fallback
+_fallback_states: dict[str, dict] = {}
+_redis_client = None
+
+
+async def _get_redis():
+    """Get or create Redis client for OAuth state."""
+    global _redis_client
+    if _redis_client is None:
+        try:
+            import redis.asyncio as aioredis
+
+            _redis_client = aioredis.from_url(
+                settings.redis_url, encoding="utf-8", decode_responses=True
+            )
+            await _redis_client.ping()
+        except Exception as e:
+            logger.warning(f"Redis unavailable for OAuth state: {e}")
+            _redis_client = None
+    return _redis_client
+
+
+async def _store_state(state: str) -> None:
+    """Store OAuth state in Redis (or fallback to memory)."""
+    redis = await _get_redis()
+    if redis:
+        try:
+            await redis.setex(f"oauth_state:bc:{state}", 600, "1")
+            return
+        except Exception:
+            pass
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    expired = [k for k, v in _fallback_states.items() if v["created_at"] < cutoff]
+    for k in expired:
+        del _fallback_states[k]
+    _fallback_states[state] = {"created_at": datetime.utcnow()}
+
+
+async def _validate_state(state: str) -> bool:
+    """Validate and consume OAuth state. Returns True if valid."""
+    redis = await _get_redis()
+    if redis:
+        try:
+            key = f"oauth_state:bc:{state}"
+            result = await redis.get(key)
+            if result:
+                await redis.delete(key)
+                return True
+            return False
+        except Exception:
+            pass
+    if state in _fallback_states:
+        _fallback_states.pop(state)
+        return True
+    return False
 
 
 @router.get("/auth")
@@ -41,11 +95,9 @@ async def auth_start(
     context = request.query_params.get("context")
 
     if code:
-        # Validate CSRF state token
+        # Validate CSRF state token via Redis
         state = request.query_params.get("state")
-        if state and state in _oauth_states:
-            _oauth_states.pop(state)
-        elif state:
+        if state and not await _validate_state(state):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid OAuth state parameter",
@@ -60,16 +112,9 @@ async def auth_start(
         )
 
     # Otherwise, this is the initial auth request
-    # Generate CSRF state token
+    # Generate CSRF state token and store in Redis
     state = secrets.token_urlsafe(32)
-
-    # Clean expired states (>10 min old)
-    cutoff = datetime.utcnow() - timedelta(minutes=10)
-    expired = [k for k, v in _oauth_states.items() if v["created_at"] < cutoff]
-    for k in expired:
-        del _oauth_states[k]
-
-    _oauth_states[state] = {"created_at": datetime.utcnow()}
+    await _store_state(state)
 
     # Redirect to BigCommerce authorization
     params = {

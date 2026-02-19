@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import settings
 from app.database import init_db, close_db
 from app.middleware.hmac_verify import WebhookHMACMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.routes import oauth, webhooks, api
 
 # Configure logging
@@ -65,6 +66,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add rate limiting middleware
+app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit_per_minute)
 
 # Add webhook HMAC verification middleware
 app.add_middleware(WebhookHMACMiddleware)
