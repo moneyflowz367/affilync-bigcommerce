@@ -23,7 +23,9 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
 # Affilync Shared Library
-affilync-integrations-common @ file:///home/ninja/codex/affilync-integrations-common
+# Install from relative path (works in both local dev and Docker builds)
+# For Render: pip install -e ../affilync-integrations-common
+-e ../affilync-integrations-common
 
 # Development/Testing
 pytest>=8.0.0

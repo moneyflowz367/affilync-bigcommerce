@@ -4,6 +4,8 @@ Handles the OAuth flow for app installation
 """
 
 import logging
+import secrets
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -13,6 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.database import get_db
 from app.services.store_service import StoreService
+
+# CSRF state token storage (use Redis in production for multi-worker)
+_oauth_states: dict[str, dict] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,16 @@ async def auth_start(
     context = request.query_params.get("context")
 
     if code:
+        # Validate CSRF state token
+        state = request.query_params.get("state")
+        if state and state in _oauth_states:
+            _oauth_states.pop(state)
+        elif state:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid OAuth state parameter",
+            )
+
         # This is the callback - exchange code for token
         return await auth_callback(
             code=code,
@@ -45,12 +60,24 @@ async def auth_start(
         )
 
     # Otherwise, this is the initial auth request
+    # Generate CSRF state token
+    state = secrets.token_urlsafe(32)
+
+    # Clean expired states (>10 min old)
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    expired = [k for k, v in _oauth_states.items() if v["created_at"] < cutoff]
+    for k in expired:
+        del _oauth_states[k]
+
+    _oauth_states[state] = {"created_at": datetime.utcnow()}
+
     # Redirect to BigCommerce authorization
     params = {
         "client_id": settings.bigcommerce_client_id,
         "redirect_uri": f"{settings.app_url}/oauth/auth",
         "response_type": "code",
         "scope": "store_v2_default store_v2_orders store_v2_products store_webhooks_manage",
+        "state": state,
     }
 
     auth_url = f"{settings.bigcommerce_auth_url}/oauth2/authorize?{urlencode(params)}"

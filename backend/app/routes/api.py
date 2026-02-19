@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.middleware.auth import require_auth
 from app.models import BigCommerceStore
 from app.services.conversion_service import ConversionService
 from app.services.product_sync import ProductSyncService
@@ -90,12 +91,22 @@ class AnalyticsResponse(BaseModel):
 async def get_current_store(
     store_hash: str = Query(..., description="Store hash"),
     db: AsyncSession = Depends(get_db),
+    auth: dict = Depends(require_auth),
 ) -> BigCommerceStore:
     """
-    Get the current store from query parameter.
+    Get the current store, requiring authentication.
 
-    In a production app, this would validate session tokens.
+    For JWT/BigCommerce JWT auth, validates that the authenticated store_hash
+    matches the requested store_hash to prevent cross-store access.
     """
+    # Verify store_hash matches auth context for non-API-key auth
+    auth_store_hash = auth.get("store_hash")
+    if auth.get("type") != "api_key" and auth_store_hash and auth_store_hash != store_hash:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this store",
+        )
+
     store_service = StoreService(db)
     store = await store_service.get_store_by_hash(store_hash)
 
