@@ -6,7 +6,7 @@ Handles the OAuth flow for app installation
 import json
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -52,11 +52,15 @@ async def _store_state(state: str) -> None:
             return
         except Exception:
             pass
-    cutoff = datetime.utcnow() - timedelta(minutes=10)
+    logger.critical(
+        "OAuth state stored in-memory — NOT safe for multi-worker deployments. "
+        "Configure REDIS_URL to enable distributed OAuth state."
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
     expired = [k for k, v in _fallback_states.items() if v["created_at"] < cutoff]
     for k in expired:
         del _fallback_states[k]
-    _fallback_states[state] = {"created_at": datetime.utcnow()}
+    _fallback_states[state] = {"created_at": datetime.now(timezone.utc)}
 
 
 async def _validate_state(state: str) -> bool:
