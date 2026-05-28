@@ -60,14 +60,13 @@ async def require_auth(
         except jwt.InvalidTokenError:
             pass
 
-        # Try BigCommerce-signed JWT (signed with client_secret)
+        # Try BigCommerce-signed JWT (signed with client_secret).
+        # V58.12 P0: route through decode_bc_jwt which enforces
+        # iss == bc/apps/{client_id} on top of audience + signature.
         try:
-            payload = jwt.decode(
-                credentials.credentials,
-                settings.bigcommerce_client_secret,
-                algorithms=["HS256"],
-                audience=settings.bigcommerce_client_id,
-            )
+            from app.middleware.jwt_bc import decode_bc_jwt
+
+            payload = decode_bc_jwt(credentials.credentials)
             store_hash = payload.get("sub", "").split("/")[-1]
             return {
                 "type": "bigcommerce_jwt",

@@ -14,6 +14,7 @@ from app.config import settings
 from app.database import init_db, close_db
 from app.middleware.hmac_verify import WebhookHMACMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware, get_limiter
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routes import oauth, webhooks, api
 
 # Configure logging
@@ -75,6 +76,11 @@ if _limiter:
 
 # Add webhook HMAC verification middleware
 app.add_middleware(WebhookHMACMiddleware)
+
+# V58.12 P0 (2026-05-28): security headers — CSP frame-ancestors limited
+# to bigcommerce.com origins, HSTS in prod, nosniff, referrer-policy.
+# Closes clickjacking + downgrade exposure on the embedded app.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Mount routes
 app.include_router(oauth.router, prefix="/oauth", tags=["OAuth"])

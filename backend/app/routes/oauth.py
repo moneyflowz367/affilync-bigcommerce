@@ -286,15 +286,14 @@ async def load_app(
     BigCommerce sends a signed JWT with store and user information.
     """
     import jwt
+    from app.middleware.jwt_bc import decode_bc_jwt
 
     try:
-        # Decode the JWT (BigCommerce signs with client_secret)
-        payload = jwt.decode(
-            signed_payload_jwt,
-            settings.bigcommerce_client_secret,
-            algorithms=["HS256"],
-            audience=settings.bigcommerce_client_id,
-        )
+        # V58.12 P0: decode_bc_jwt enforces iss=bc/apps/{client_id} +
+        # aud + signature + required claims. The prior naked jwt.decode
+        # would accept any token signed with the client_secret regardless
+        # of iss claim.
+        payload = decode_bc_jwt(signed_payload_jwt)
 
         store_hash = payload.get("sub", "").split("/")[-1]
         user = payload.get("user", {})
@@ -338,14 +337,11 @@ async def uninstall_app(
     Called when the merchant uninstalls the app.
     """
     import jwt
+    from app.middleware.jwt_bc import decode_bc_jwt
 
     try:
-        payload = jwt.decode(
-            signed_payload_jwt,
-            settings.bigcommerce_client_secret,
-            algorithms=["HS256"],
-            audience=settings.bigcommerce_client_id,
-        )
+        # V58.12 P0: see jwt_bc.decode_bc_jwt — verifies iss + aud + sig.
+        payload = decode_bc_jwt(signed_payload_jwt)
 
         store_hash = payload.get("sub", "").split("/")[-1]
 
@@ -375,14 +371,11 @@ async def remove_user(
     Called when a user is removed from the store.
     """
     import jwt
+    from app.middleware.jwt_bc import decode_bc_jwt
 
     try:
-        payload = jwt.decode(
-            signed_payload_jwt,
-            settings.bigcommerce_client_secret,
-            algorithms=["HS256"],
-            audience=settings.bigcommerce_client_id,
-        )
+        # V58.12 P0: see jwt_bc.decode_bc_jwt — verifies iss + aud + sig.
+        payload = decode_bc_jwt(signed_payload_jwt)
 
         # Log the event but don't take action
         # (we don't track individual users)
