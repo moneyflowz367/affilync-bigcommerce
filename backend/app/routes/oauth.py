@@ -99,12 +99,16 @@ async def auth_start(
     context = request.query_params.get("context")
 
     if code:
-        # Validate CSRF state token via Redis
+        # CSRF state token MUST be present and MUST validate. The previous
+        # check `if state and not _validate_state(state)` silently skipped
+        # validation when state was absent — an attacker could initiate the
+        # callback by stripping the param, force-installing a store under
+        # their own token. (V58.6 audit P0 2026-05-28.)
         state = request.query_params.get("state")
-        if state and not await _validate_state(state):
+        if not state or not await _validate_state(state):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid OAuth state parameter",
+                detail="Invalid or missing OAuth state parameter",
             )
 
         # This is the callback - exchange code for token
@@ -112,6 +116,8 @@ async def auth_start(
             code=code,
             scope=scope,
             context=context,
+            state=state,
+            state_already_validated=True,
             db=db,
         )
 
@@ -138,6 +144,8 @@ async def auth_callback(
     code: str = Query(..., description="Authorization code"),
     scope: str = Query(..., description="Granted scopes"),
     context: str = Query(..., description="Store context"),
+    state: str | None = Query(None, description="CSRF state token"),
+    state_already_validated: bool = False,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -145,7 +153,20 @@ async def auth_callback(
 
     BigCommerce redirects here after the merchant authorizes the app.
     We exchange the code for an access token and install the app.
+
+    CSRF state MUST validate. The /auth route is the canonical entry point
+    and validates state before forwarding to this function with
+    state_already_validated=True. Direct callers (legacy BigCommerce
+    redirect URI) must supply a state that this route validates itself.
+    (V58.6 audit P0 2026-05-28.)
     """
+    if not state_already_validated:
+        if not state or not await _validate_state(state):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or missing OAuth state parameter",
+            )
+
     # Extract store hash from context (format: stores/{store_hash})
     store_hash = context.split("/")[-1] if context else None
 
