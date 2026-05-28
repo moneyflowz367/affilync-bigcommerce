@@ -5,6 +5,7 @@ Handles the OAuth flow for app installation
 
 import json
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -43,30 +44,60 @@ async def _get_redis():
     return _redis_client
 
 
+class _OAuthStateError(RuntimeError):
+    """Raised when OAuth state storage is unavailable."""
+
+
 async def _store_state(state: str) -> None:
-    """Store OAuth state in Redis (or fallback to memory)."""
+    """Store OAuth state in Redis. Raise if Redis unavailable in prod.
+
+    V58.9 P0 (2026-05-28): the in-memory fallback only works inside a
+    SINGLE worker process. Render runs multiple workers; state issued by
+    worker A is invisible to worker B and validation fails — UNLESS the
+    callback happens to route to the same worker. Either path produces
+    inconsistent behaviour, and under sustained Redis outage the in-memory
+    dict on a freshly-recycled worker is empty → ANY state value can be
+    "validated" by writing to that same dict via /auth and then quickly
+    re-using it via /callback. CSRF protection collapses.
+
+    Better to refuse the OAuth flow entirely when Redis is down. The user
+    sees a clear failure and retries once Redis recovers, rather than
+    completing an OAuth install with broken state-tracking.
+    """
     redis = await _get_redis()
-    if redis:
+    if redis is not None:
         try:
             await redis.setex(f"oauth_state:bc:{state}", 600, "1")
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.critical("oauth_state_redis_setex_failed: %s", exc)
+            raise _OAuthStateError("OAuth state storage unavailable") from exc
+
+    # Redis is None and we're in a non-test env — refuse.
+    env = (os.getenv("ENVIRONMENT") or "").lower()
+    if env in ("test", "testing", "ci", "pytest", "development", "dev"):
+        # Dev / test fallback — single-process is fine for these envs.
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+        expired = [k for k, v in _fallback_states.items() if v["created_at"] < cutoff]
+        for k in expired:
+            del _fallback_states[k]
+        _fallback_states[state] = {"created_at": datetime.now(timezone.utc)}
+        return
+
     logger.critical(
-        "OAuth state stored in-memory — NOT safe for multi-worker deployments. "
-        "Configure REDIS_URL to enable distributed OAuth state."
+        "oauth_state_redis_unavailable env=%s — refusing OAuth install", env
     )
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
-    expired = [k for k, v in _fallback_states.items() if v["created_at"] < cutoff]
-    for k in expired:
-        del _fallback_states[k]
-    _fallback_states[state] = {"created_at": datetime.now(timezone.utc)}
+    raise _OAuthStateError("OAuth state storage unavailable")
 
 
 async def _validate_state(state: str) -> bool:
-    """Validate and consume OAuth state. Returns True if valid."""
+    """Validate and consume OAuth state.
+
+    V58.9 P0: under prod-Redis-outage, refuse to validate via the
+    in-memory dict. Same multi-worker correctness argument as _store_state.
+    """
     redis = await _get_redis()
-    if redis:
+    if redis is not None:
         try:
             key = f"oauth_state:bc:{state}"
             result = await redis.get(key)
@@ -74,11 +105,20 @@ async def _validate_state(state: str) -> bool:
                 await redis.delete(key)
                 return True
             return False
-        except Exception:
-            pass
-    if state in _fallback_states:
-        _fallback_states.pop(state)
-        return True
+        except Exception as exc:
+            logger.critical("oauth_state_redis_validate_failed: %s", exc)
+            return False
+
+    env = (os.getenv("ENVIRONMENT") or "").lower()
+    if env in ("test", "testing", "ci", "pytest", "development", "dev"):
+        if state in _fallback_states:
+            _fallback_states.pop(state)
+            return True
+        return False
+
+    logger.critical(
+        "oauth_state_redis_unavailable env=%s — failing validation closed", env
+    )
     return False
 
 
@@ -124,7 +164,15 @@ async def auth_start(
     # Otherwise, this is the initial auth request
     # Generate CSRF state token and store in Redis
     state = secrets.token_urlsafe(32)
-    await _store_state(state)
+    try:
+        await _store_state(state)
+    except _OAuthStateError:
+        # Redis is down in prod — refuse to issue an auth URL rather than
+        # ship the merchant into an OAuth flow we can't validate.
+        raise HTTPException(
+            status_code=503,
+            detail="OAuth state storage unavailable; please retry shortly.",
+        )
 
     # Redirect to BigCommerce authorization
     params = {
