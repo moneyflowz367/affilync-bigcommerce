@@ -177,12 +177,65 @@ class StoreService:
 
         Returns:
             bool: True if store was found and updated
+
+        V58.26 P1 (2026-05-28): tear down BigCommerce-side webhook
+        subscriptions BEFORE clearing the access token. The prior
+        implementation flipped is_active and cleared access_token in a
+        single step — but BC-side hooks/{id} subscriptions are NOT
+        torn down. They become orphans that BC retries-and-fails to
+        deliver until the merchant manually purges them from the
+        merchant panel. Worse: clearing access_token first means
+        there's no auth path back to delete them.
+
+        Order:
+          1. List + DELETE every BC-side webhook for this store
+             (best-effort — log failures but don't block uninstall;
+             BC may have already revoked the token on its end).
+          2. Mark local row inactive + clear access_token last.
         """
         store = await self.get_store_by_hash(store_hash)
 
         if not store:
             logger.warning(f"Uninstall webhook for unknown store: {store_hash}")
             return False
+
+        # Best-effort BC-side webhook teardown before token nullification.
+        try:
+            from app.services.bigcommerce_client import BigCommerceClient
+
+            bc_client = BigCommerceClient(
+                store_hash=store.store_hash, access_token=store.access_token
+            )
+            existing_hooks = await bc_client.get_webhooks()
+            for hook in existing_hooks or []:
+                hook_id = hook.get("id") if isinstance(hook, dict) else None
+                if not hook_id:
+                    continue
+                try:
+                    await bc_client.delete_webhook(hook_id)
+                    logger.info(
+                        "uninstall_store: deleted BC webhook %s for store=%s",
+                        hook_id,
+                        store_hash,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "uninstall_store: failed to delete BC webhook %s for "
+                        "store=%s: %s",
+                        hook_id,
+                        store_hash,
+                        exc,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            # BC may have already revoked the token, or the access_token
+            # column may be encrypted/empty. Either way the uninstall
+            # must still complete locally.
+            logger.warning(
+                "uninstall_store: BC-side webhook teardown skipped for "
+                "store=%s: %s",
+                store_hash,
+                exc,
+            )
 
         store.is_active = False
         store.uninstalled_at = datetime.utcnow()
