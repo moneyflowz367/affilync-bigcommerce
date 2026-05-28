@@ -1,9 +1,23 @@
 """
-HMAC Verification for BigCommerce Webhooks
-Verifies webhook signatures using SHA256 HMAC
+Bearer-token verification for BigCommerce webhooks.
+
+V58.36 P0 (2026-05-28): the previous HMAC-content-hash scheme
+expected a header (X-BC-Api-Content-Hash) that BigCommerce does NOT
+emit on outbound webhook deliveries — every order/product/uninstall
+webhook silently 401'd at this middleware. Conversion tracking,
+product sync, and uninstall teardown were ALL dead end-to-end.
+
+BC's actual outbound-webhook auth model is the `headers` dict
+configured at webhook registration time. The app generates a strong
+secret, stores it in BIGCOMMERCE_WEBHOOK_SECRET, propagates it as
+`Authorization: Bearer <secret>` on register_all_webhooks, and this
+middleware compares constant-time.
+
+The function name `verify_webhook_hmac` is retained as a thin
+backward-compat alias so existing call sites keep working; semantics
+are now bearer-token comparison.
 """
 
-import hashlib
 import hmac
 import logging
 from typing import Callable
@@ -17,38 +31,46 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def verify_webhook_hmac(payload: bytes, signature: str) -> bool:
+def _expected_webhook_token() -> str:
+    """Return the bearer token BC should be sending on every webhook.
+
+    Falls back to ``bigcommerce_client_secret`` when the dedicated
+    ``BIGCOMMERCE_WEBHOOK_SECRET`` env var isn't set, so unit tests +
+    dev don't need a separate secret. Production should always set
+    the dedicated env var so it can be rotated independently.
     """
-    Verify BigCommerce webhook HMAC signature.
+    return settings.bigcommerce_webhook_secret or settings.bigcommerce_client_secret
 
-    BigCommerce uses SHA256 HMAC with the client secret.
-    The signature is sent in the X-BC-Api-Content-Hash header.
 
-    Args:
-        payload: Raw request body bytes
-        signature: Signature from X-BC-Api-Content-Hash header
-
-    Returns:
-        bool: True if signature is valid
-    """
-    if not signature:
+def verify_webhook_bearer(authorization_header: str) -> bool:
+    """Verify the `Authorization: Bearer <token>` header sent by BC."""
+    if not authorization_header:
         return False
+    parts = authorization_header.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+    return hmac.compare_digest(parts[1], _expected_webhook_token())
 
-    # Compute expected signature
-    expected = hmac.new(
-        settings.bigcommerce_client_secret.encode(),
-        payload,
-        hashlib.sha256,
-    ).hexdigest()
 
-    # Constant-time comparison
-    return hmac.compare_digest(expected.lower(), signature.lower())
+# Back-compat alias — old callers passed (payload, signature). New
+# semantics: verify the Authorization bearer string only. payload is
+# kept in the signature for source compatibility but ignored.
+def verify_webhook_hmac(payload: bytes, signature: str) -> bool:  # noqa: D401
+    """Deprecated: use verify_webhook_bearer.
+
+    Kept as a thin alias so any out-of-tree callers keep compiling.
+    The `payload` argument is no longer used.
+    """
+    return verify_webhook_bearer(signature)
 
 
 class WebhookHMACMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware to verify BigCommerce webhook HMAC signatures.
-    Only applies to /webhooks/bigcommerce endpoint.
+    """Middleware that verifies the per-app bearer token on BC webhooks.
+
+    Only applies to /webhooks/bigcommerce. Body is still read once and
+    stashed on request.state.raw_body so route handlers don't have to
+    re-read it (FastAPI/Starlette doesn't let you re-await body()
+    multiple times by default).
     """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -56,35 +78,27 @@ class WebhookHMACMiddleware(BaseHTTPMiddleware):
         if not request.url.path.startswith("/webhooks/bigcommerce"):
             return await call_next(request)
 
-        # Get HMAC header
-        hmac_header = request.headers.get("X-BC-Api-Content-Hash")
-        if not hmac_header:
-            logger.warning("Webhook request missing HMAC header")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing HMAC header",
-            )
+        # V58.36 P0 (2026-05-28): bearer-token auth (see module
+        # docstring). Header arrives unchanged for replay-protection
+        # dedup, so the per-(body+auth) key remains unique per
+        # delivery and an attacker who captured one valid request
+        # still can't replay it after 24h.
+        authorization = request.headers.get("Authorization") or ""
 
         # Read body and store for later use
         body = await request.body()
 
-        # Verify HMAC
-        if not verify_webhook_hmac(body, hmac_header):
-            logger.warning("Webhook HMAC verification failed")
+        if not verify_webhook_bearer(authorization):
+            logger.warning("BC webhook bearer verification failed")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid HMAC signature",
+                detail="Invalid webhook credentials",
             )
 
-        # SEC: replay protection. Without this, a captured webhook
-        # (passive eavesdrop on the wire, or copied from logs/proxies)
-        # can be replayed indefinitely — the HMAC remains valid forever
-        # because BigCommerce does not include a fresh nonce by default.
-        # Dedup on (hash of body + signature) for 24 h; the body is the
-        # only thing the signature commits to, so a true replay is
-        # byte-identical. Redis is best-effort: if it's down we log and
-        # allow (fail-open) rather than block legitimate webhooks.
-        # (Pre-launch audit 2026-05-18.)
+        # SEC: replay protection. Same logic as before — captured
+        # webhooks can be replayed indefinitely without a freshness
+        # guard because BC does not include a per-delivery nonce.
+        # Dedup on (hash of body + authorization) for 24 h.
         try:
             import hashlib as _hashlib
 
@@ -94,7 +108,7 @@ class WebhookHMACMiddleware(BaseHTTPMiddleware):
             if redis is not None:
                 replay_key = (
                     "bc_webhook_replay:"
-                    + _hashlib.sha256(body + hmac_header.encode()).hexdigest()
+                    + _hashlib.sha256(body + authorization.encode()).hexdigest()
                 )
                 # SET NX EX 86400 — atomic dedup with 24 h TTL.
                 claimed = await redis.set(replay_key, b"1", nx=True, ex=86400)
@@ -122,29 +136,18 @@ class WebhookHMACMiddleware(BaseHTTPMiddleware):
 
 
 async def verify_webhook_signature(request: Request) -> bytes:
+    """FastAPI dependency to verify webhook auth and return body.
+
+    Alternative to middleware for more granular control. Uses the same
+    bearer-token semantics as the middleware (V58.36).
     """
-    FastAPI dependency to verify webhook signature and return body.
-
-    Alternative to middleware for more granular control.
-
-    Usage:
-        @router.post("/webhooks/bigcommerce")
-        async def handle_webhook(body: bytes = Depends(verify_webhook_signature)):
-            ...
-    """
-    hmac_header = request.headers.get("X-BC-Api-Content-Hash")
-    if not hmac_header:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing HMAC header",
-        )
-
+    authorization = request.headers.get("Authorization") or ""
     body = await request.body()
 
-    if not verify_webhook_hmac(body, hmac_header):
+    if not verify_webhook_bearer(authorization):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid HMAC signature",
+            detail="Invalid webhook credentials",
         )
 
     return body

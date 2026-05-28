@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     encryption_key: str
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
+    # V58.36 P0 (2026-05-28): per-app bearer token sent as the
+    # Authorization header on every outbound BC webhook. The
+    # previous HMAC-content-hash scheme assumed a header
+    # X-BC-Api-Content-Hash that BigCommerce never sends on outbound
+    # webhook deliveries — every webhook 401'd at the middleware
+    # silently. BC's actual outbound-webhook auth pattern is the
+    # `headers` map configured at webhook registration time. Operator
+    # generates a strong random secret and sets this env var; the
+    # registration code propagates it as `Authorization: Bearer <v>`,
+    # and the middleware compares constant-time. Falls back to
+    # bigcommerce_client_secret in dev so unit tests don't have to
+    # set a separate secret.
+    bigcommerce_webhook_secret: Optional[str] = None
 
     # App URLs
     app_url: str = "https://bigcommerce.affilync.com"

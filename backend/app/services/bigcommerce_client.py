@@ -364,12 +364,25 @@ class BigCommerceClient:
         """
         Register all required webhooks for the app.
 
-        Args:
-            callback_url: Base callback URL
+        V58.36 P0 (2026-05-28): every webhook is now registered with
+        an Authorization: Bearer <BIGCOMMERCE_WEBHOOK_SECRET> header
+        so BC sends our identity attestation on every delivery — the
+        middleware compares constant-time. Without this header, BC
+        attaches no auth metadata to outbound webhooks and the
+        middleware's previous X-BC-Api-Content-Hash check rejected
+        every delivery (commerce pipeline dead).
 
-        Returns:
-            List of created webhooks
+        V58.36 P1 (2026-05-28): also reconciles destination drift —
+        if a webhook for a given scope exists but points at a stale
+        URL (previous app deployment, attacker-set during a transient
+        compromise on reinstall), we delete + recreate at the
+        current callback_url. Reduces silent-misdelivery surface.
         """
+        from app.config import settings
+
+        secret = settings.bigcommerce_webhook_secret or settings.bigcommerce_client_secret
+        webhook_headers = {"Authorization": f"Bearer {secret}"}
+
         # Define required webhook scopes
         scopes = [
             "store/order/created",
@@ -383,15 +396,40 @@ class BigCommerceClient:
 
         # Get existing webhooks
         existing = await self.get_webhooks()
-        existing_scopes = {w.get("scope") for w in existing}
+        existing_by_scope: Dict[str, Dict[str, Any]] = {
+            w.get("scope"): w for w in existing if w.get("scope")
+        }
 
         created = []
         for scope in scopes:
-            if scope not in existing_scopes:
+            current = existing_by_scope.get(scope)
+            # If a stale destination exists, delete and re-create at the
+            # current callback URL with the current bearer token. BC's
+            # webhook update doesn't let us rotate the `headers` map
+            # safely on existing rows; delete-then-create is the
+            # canonical path for rotation.
+            if current and current.get("destination") != callback_url:
+                webhook_id = current.get("id")
+                if webhook_id:
+                    try:
+                        await self.delete_webhook(webhook_id)
+                        logger.info(
+                            "Deleted stale BC webhook %s (scope=%s dest=%s)",
+                            webhook_id, scope, current.get("destination"),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Could not delete stale BC webhook %s: %s",
+                            webhook_id, exc,
+                        )
+                current = None  # force recreate
+
+            if current is None:
                 webhook = await self.create_webhook(
                     scope=scope,
                     destination=callback_url,
                     is_active=True,
+                    headers=webhook_headers,
                 )
                 created.append(webhook)
                 logger.info(f"Created webhook: {scope}")
