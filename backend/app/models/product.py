@@ -68,8 +68,10 @@ class BigCommerceProduct(Base):
     last_synced_at = Column(DateTime)
     sync_error = Column(Text)
 
-    # Metadata
-    metadata = Column(JSONB, default=dict)
+    # Metadata. NOTE: `metadata` is reserved by SQLAlchemy's declarative Base
+    # (raises InvalidRequestError at class definition). Map to the existing
+    # "metadata" DB column under a non-reserved attribute name.
+    product_metadata = Column("metadata", JSONB, default=dict)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -143,7 +145,7 @@ class BigCommerceProduct(Base):
             inventory_tracking=bc_data.get("inventory_tracking"),
             is_visible=bc_data.get("is_visible", True),
             availability=bc_data.get("availability"),
-            metadata={
+            product_metadata={
                 "type": bc_data.get("type"),
                 "weight": bc_data.get("weight"),
                 "condition": bc_data.get("condition"),
