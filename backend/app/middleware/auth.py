@@ -51,6 +51,8 @@ async def require_auth(
                 "type": "jwt",
                 "store_hash": payload.get("store_hash"),
                 "user_id": payload.get("user_id"),
+                "brand_id": payload.get("brand_id"),
+                "is_admin": bool(payload.get("is_admin") or payload.get("is_superuser")),
             }
         except jwt.ExpiredSignatureError:
             raise HTTPException(

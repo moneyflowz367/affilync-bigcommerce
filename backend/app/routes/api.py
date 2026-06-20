@@ -94,19 +94,17 @@ async def get_current_store(
     auth: dict = Depends(require_auth),
 ) -> BigCommerceStore:
     """
-    Get the current store, requiring authentication.
+    Get the current store, requiring authentication AND authorization for the
+    specific store (cross-store IDOR gate).
 
-    For JWT/BigCommerce JWT auth, validates that the authenticated store_hash
-    matches the requested store_hash to prevent cross-store access.
+    SECURITY: the previous check ``type != "api_key" and auth_store_hash and
+    auth_store_hash != store_hash`` FAILED OPEN — a JWT with no ``store_hash``
+    claim (e.g. a platform/brand token, which carries brand_id not store_hash)
+    skipped the comparison entirely and could read/modify ANY store by passing
+    its store_hash. Fail CLOSED instead: a non-service caller must be bound to
+    this store — by a matching ``store_hash`` claim (embedded BigCommerce app),
+    by owning it (``brand_id`` == ``store.brand_id``), or by admin.
     """
-    # Verify store_hash matches auth context for non-API-key auth
-    auth_store_hash = auth.get("store_hash")
-    if auth.get("type") != "api_key" and auth_store_hash and auth_store_hash != store_hash:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to access this store",
-        )
-
     store_service = StoreService(db)
     store = await store_service.get_store_by_hash(store_hash)
 
@@ -115,6 +113,22 @@ async def get_current_store(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Store not found or inactive",
         )
+
+    # Internal service calls (api_key) are trusted — the gateway scopes them.
+    if auth.get("type") != "api_key":
+        auth_store_hash = auth.get("store_hash")
+        auth_brand_id = auth.get("brand_id")
+        store_bound = bool(auth_store_hash) and auth_store_hash == store_hash
+        brand_owns = (
+            bool(auth_brand_id)
+            and store.brand_id is not None
+            and str(auth_brand_id) == str(store.brand_id)
+        )
+        if not (auth.get("is_admin") or store_bound or brand_owns):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to access this store",
+            )
 
     return store
 
