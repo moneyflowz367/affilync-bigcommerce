@@ -5,7 +5,7 @@ BigCommerceWebhookLog Model - Webhook event logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -18,6 +18,18 @@ class BigCommerceWebhookLog(Base):
     """
 
     __tablename__ = "bigcommerce_webhook_logs"
+    # Atomic dedup (migration 002): a partial unique index over (store_id, hash)
+    # makes duplicate-webhook rejection race-proof and Redis-outage-proof. Only
+    # non-null hashes are constrained (legacy/un-hashed rows are exempt).
+    __table_args__ = (
+        Index(
+            "uq_bc_webhook_logs_store_hash",
+            "store_id",
+            "hash",
+            unique=True,
+            postgresql_where=text("hash IS NOT NULL"),
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
 

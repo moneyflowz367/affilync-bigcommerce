@@ -10,6 +10,7 @@ from hashlib import sha256
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -63,7 +64,29 @@ async def log_webhook(
         payload=payload,
     )
     db.add(log)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # A concurrent identical delivery (or a replay during a Redis outage)
+        # raced past the non-atomic check above and hit the (store_id, hash)
+        # unique index. Treat it as the duplicate it is: roll back and return
+        # the row the winner inserted.
+        await db.rollback()
+        existing = await db.execute(
+            select(BigCommerceWebhookLog).where(
+                BigCommerceWebhookLog.hash == payload_hash,
+                BigCommerceWebhookLog.store_id == store_id,
+            )
+        )
+        dup = existing.scalar_one_or_none()
+        if dup:
+            logger.info(
+                "BigCommerce webhook duplicate collapsed via unique index (hash=%s, scope=%s)",
+                payload_hash,
+                scope,
+            )
+            return dup
+        raise
     await db.refresh(log)
     return log
 
