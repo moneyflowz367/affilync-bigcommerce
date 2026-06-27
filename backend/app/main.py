@@ -15,7 +15,7 @@ from app.database import init_db, close_db
 from app.middleware.hmac_verify import WebhookHMACMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware, get_limiter
 from app.middleware.security_headers import SecurityHeadersMiddleware
-from app.routes import oauth, webhooks, api
+from app.routes import oauth, webhooks, api, billing
 
 # Configure logging
 logging.basicConfig(
@@ -86,6 +86,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(oauth.router, prefix="/oauth", tags=["OAuth"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
 app.include_router(api.router, prefix="/api", tags=["API"])
+app.include_router(billing.router, prefix="/api/billing", tags=["Billing"])
 
 
 # Root endpoint
